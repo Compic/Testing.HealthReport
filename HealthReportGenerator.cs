@@ -18,29 +18,67 @@ namespace Testing.HealthReport
             var now = _dateTimeProvider.OffsetNow;
             var startDate = now.AddDays(-days).Date;
 
-            for (var date = startDate; date < now.Date; date = date.AddDays(1))
+            var groupedData = _healthData.GroupBy(x => x.Service);
+            foreach (var serviceData in groupedData)
             {
-                var dailyData = _healthData.Where(h => h.Date.Date == date).ToList();
+                Console.WriteLine($"Report for past {days} days for {serviceData.Key}");
+                Console.WriteLine("Format: {ServiceName} {Date} {Uptime} {UptimePercent} {UnhealthyPercent} {DegradedPercent}");
 
-                if (!dailyData.Any())
+                bool startFromFirstLog = startDate < serviceData.First().Date;
+                HealthStatus lastStatus = startFromFirstLog ? serviceData.First().Status : serviceData.Last(x => x.Date < startDate).Status;
+                DateTimeOffset lastStatusDate = startFromFirstLog ? serviceData.First().Date : serviceData.Last(x => x.Date < startDate).Date;
+
+                for (var date = startDate; date <= now.Date; date = date.AddDays(1))
                 {
-                    Console.WriteLine($"Unavailable {date:yyyy-MM-dd}");
-                    continue;
-                }
+                    var dailyData = serviceData.Where(d => d.Date.Date == date.Date).ToList();
 
-                var groupedData = dailyData.GroupBy(x => x.Service);
-                foreach (var serviceData in groupedData)
-                {
-                    var totalCount = serviceData.Count();
-                    var healthyCount = serviceData.Count(h => h.Status == HealthStatus.Healthy);
-                    var unhealthyCount = serviceData.Count(h => h.Status == HealthStatus.Unhealthy);
-                    var degradedCount = serviceData.Count(h => h.Status == HealthStatus.Degraded);
+                    var statusTimeSpans = new Dictionary<HealthStatus, TimeSpan>
+                    {
+                        { HealthStatus.Healthy, TimeSpan.Zero },
+                        { HealthStatus.Unhealthy, TimeSpan.Zero },
+                        { HealthStatus.Degraded, TimeSpan.Zero }
+                    };
 
-                    var uptimePercent = (double)healthyCount / totalCount * 100;
-                    var unhealthyPercent = (double)unhealthyCount / totalCount * 100;
-                    var degradedPercent = (double)degradedCount / totalCount * 100;
+                    if (!dailyData.Any())
+                    {
+                        if (lastStatusDate.Date <= date.Date)
+                        {
+                            statusTimeSpans[lastStatus] += TimeSpan.FromDays(1);
+                            lastStatusDate = date.AddDays(1);
+                        }
+                        else
+                        {
+                            Console.WriteLine($"{serviceData.Key} {date:M/d/yyyy} Unavailable");
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        if (lastStatusDate != dailyData.First().Date)
+                        {
+                            dailyData.Insert(0, new HealthDataItem(serviceData.Key, date.Date, lastStatus));
+                        }
+                        dailyData.Add(new HealthDataItem(serviceData.Key, date.Date.AddDays(1), dailyData.Last().Status));
 
-                    Console.WriteLine($"{serviceData.Key}, {date:yyyy-MM-dd}, Uptime: {healthyCount}, UptimePercent: {uptimePercent:f2}%, UnhealthyPercent: {unhealthyPercent:f2}%, DegradedPercent: {degradedPercent:f2}%");
+                        for (int i = 0; i < dailyData.Count - 1; i++)
+                        {
+                            var current = dailyData[i];
+                            var next = dailyData[i + 1];
+                            var duration = next.Date - current.Date;
+                            statusTimeSpans[current.Status] += duration;
+                        }
+
+                        lastStatus = dailyData.Last().Status;
+                        lastStatusDate = dailyData.Last().Date;
+                    }
+
+                    var dayTimeSpan = TimeSpan.FromDays(1);
+                    var totalUptime = statusTimeSpans[HealthStatus.Healthy];
+                    var uptimePercent = (statusTimeSpans[HealthStatus.Healthy].TotalMinutes / dayTimeSpan.TotalMinutes) * 100;
+                    var unhealthyPercent = (statusTimeSpans[HealthStatus.Unhealthy].TotalMinutes / dayTimeSpan.TotalMinutes) * 100;
+                    var degradedPercent = (statusTimeSpans[HealthStatus.Degraded].TotalMinutes / dayTimeSpan.TotalMinutes) * 100;
+
+                    Console.WriteLine($"{serviceData.Key} {date:M/d/yyyy} {(int)totalUptime.TotalHours:D2}:{totalUptime.Minutes:D2}:{totalUptime.Seconds:D2} {uptimePercent:f2}% {unhealthyPercent:f2}% {degradedPercent:f2}%");
                 }
             }
         }
